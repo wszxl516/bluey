@@ -3,9 +3,4 @@ resolver="2"
 
 members = [
     "bluey",
-    "bluey-web"
-]
-
-exclude = [
-    "bluey-ui"
 ]

@@ -13,7 +13,8 @@ use std::convert::TryInto;
 use std::fmt;
 use std::iter::Extend;
 use std::str::FromStr;
-
+#[cfg(target_os = "android")]
+pub use jni;
 pub mod uuid;
 
 pub mod session;
@@ -30,11 +31,8 @@ use characteristic::{Characteristic, CharacteristicProperties};
 pub mod descriptor;
 use descriptor::Descriptor;
 
-#[cfg(target_os = "windows")]
-mod winrt;
-
 #[cfg(target_os = "android")]
-mod android;
+pub mod android;
 
 mod fake;
 
@@ -431,6 +429,12 @@ pub enum Event {
     },
     #[non_exhaustive]
     ServiceGattDescriptorsComplete {
+        peripheral: Peripheral,
+        service: Service,
+        characteristic: Characteristic,
+    },
+    #[non_exhaustive]
+    GattCharacteristicWriteComplete {
         peripheral: Peripheral,
         service: Service,
         characteristic: Characteristic,

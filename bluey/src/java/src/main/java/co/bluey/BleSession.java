@@ -234,7 +234,6 @@ public class BleSession /*implements Closeable*/ {
     @SuppressLint("MissingPermission")
     private void startScanDirect() {
         scanner = adapter.getBluetoothLeScanner();
-
         BleSession session = this;
 
         scannerCallback = new ScanCallback() {
@@ -242,7 +241,21 @@ public class BleSession /*implements Closeable*/ {
             public void onScanResult(int callbackType, ScanResult result) {
                 BluetoothDevice device = result.getDevice();
                 String address = device.getAddress();
+                Log.d("BleSession", String.format("device found = %s %s", address, device));
                 session.onScanResult(sessionHandle, callbackType, result, address);
+            }
+            @Override
+            public void onBatchScanResults(List<ScanResult> results) {
+                Log.e("BleSession", String.format("onScanFailed = %s", results));
+            }
+            /**
+             * Callback when scan could not be started.
+             *
+             * @param errorCode Error code (one of SCAN_FAILED_*) for scan failure.
+             */
+            @Override
+            public void onScanFailed(int errorCode) {
+                Log.e("BleSession", String.format("onScanFailed = %d", errorCode));
             }
         };
 
@@ -253,10 +266,14 @@ public class BleSession /*implements Closeable*/ {
         // TODO: support building filters
 
 
-        //ScanSettings settings = new ScanSettings.Builder()
-        //        .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-        //        .build();
-        scanner.startScan(scannerFilters, scannerSettingsBuilder.build(), scannerCallback);
+        ScanSettings settings = new ScanSettings.Builder()
+               .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
+                .setReportDelay(100)
+                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+               .build();
+//        scanner.startScan(scannerFilters, settings, scannerCallback);
+         scanner.startScan(scannerFilters, scannerSettingsBuilder.build(), scannerCallback);
     }
 
     public void scannerConfigReset() throws Exception {
@@ -290,8 +307,10 @@ public class BleSession /*implements Closeable*/ {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && COMPANION_CHOOSER_REQUEST_CODE >= 0) {
+            Log.d("BleSession", "startScanViaCompanionAPI");
             startScanViaCompanionAPI();
         } else {
+            Log.d("BleSession", "startScanDirect");
             startScanDirect();
         }
 

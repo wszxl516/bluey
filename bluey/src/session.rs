@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::{stream, Stream, StreamExt};
-use log::{info, trace, warn};
+use log::{info, debug, trace, warn};
 use std::borrow::BorrowMut;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -27,8 +27,6 @@ use crate::{
     ServiceHandle,
 };
 
-#[cfg(target_os = "windows")]
-use crate::winrt;
 
 #[cfg(target_os = "android")]
 use crate::android;
@@ -206,8 +204,6 @@ pub(crate) trait BackendSession {
 
 #[derive(Debug)]
 enum BackendSessionImpl {
-    #[cfg(target_os = "windows")]
-    Winrt(winrt::session::WinrtSession),
     #[cfg(target_os = "android")]
     Android(android::session::AndroidSession),
     Fake(fake::session::FakeSession),
@@ -215,8 +211,6 @@ enum BackendSessionImpl {
 impl BackendSessionImpl {
     fn api(&self) -> &dyn BackendSession {
         match self {
-            #[cfg(target_os = "windows")]
-            BackendSessionImpl::Winrt(winrt) => winrt,
             #[cfg(target_os = "android")]
             BackendSessionImpl::Android(android) => android,
             BackendSessionImpl::Fake(fake) => fake,
@@ -455,10 +449,10 @@ pub enum Backend {
 
 #[cfg(target_os="android")]
 pub struct AndroidConfig<'a> {
-    pub jni_env: jni::JNIEnv<'a>,
+    pub vm: jni::JavaVM,
     pub activity: jni::objects::JObject<'a>,
     pub companion_chooser_request_code: Option<u32>,
-
+    pub dex_loader: android::helper::DexLoader
     //lifetime: PhantomData<&'a ()>,
 }
 
@@ -498,15 +492,17 @@ impl<'a> SessionConfig<'a> {
     }
 
     #[cfg(target_os="android")]
-    pub fn android_new(env: jni::JNIEnv<'a>,
+    pub fn android_new(vm: jni::JavaVM,
                        activity: jni::objects::JObject<'a>,
+                    dex_loader: android::helper::DexLoader,
                        companion_chooser_request_code: Option<u32>) -> SessionConfig<'a> {
         SessionConfig {
             backend: Backend::SystemDefault,
 
             android: Some(AndroidConfig {
-                jni_env: env,
+                vm,
                 activity,
+                dex_loader,
                 companion_chooser_request_code
             }),
 
@@ -526,7 +522,7 @@ impl<'a> SessionConfig<'a> {
     }
     */
 
-    pub async fn start(self) -> Result<Session> {
+    pub async fn start(&self) -> Result<Session> {
         Session::start(self).await
     }
 }
@@ -546,7 +542,7 @@ impl Session {
         Self { inner }
     }
 
-    async fn start<'a>(config: SessionConfig<'a>) -> Result<Self> {
+    async fn start<'a>(config: &SessionConfig<'a>) -> Result<Self> {
         let (broadcast_sender, _) = broadcast::channel(16);
 
         // Each per-backend backend is responsible for feeding the backend event bus
@@ -577,6 +573,7 @@ impl Session {
                     fake::session::FakeSession::new(&config, backend_bus_tx.clone())?;
                 BackendSessionImpl::Fake(implementation)
             }
+            _ => unreachable!()
         };
         let session =
             Session { inner: Arc::new(SessionInner { event_bus: broadcast_sender,
@@ -1362,7 +1359,6 @@ impl Session {
     async fn run_backend_task(weak_session_inner: Weak<SessionInner>,
                               backend_bus: mpsc::UnboundedReceiver<BackendEvent>) {
         trace!("Starting task to process backend events from the backend_bus...");
-
         let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(backend_bus);
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
@@ -1375,7 +1371,7 @@ impl Session {
                     break;
                 }
             };
-
+            debug!("run_backend_task event: {:?}", event);
             match event {
                 BackendEvent::PeripheralFound { peripheral_handle } => {
                     session.ensure_peripheral_state(peripheral_handle);
@@ -1510,7 +1506,12 @@ impl Session {
                         log::error!("Error handling connection failure notification: {err:?}");
                     }
                 },
-                BackendEvent::GattCharacteristicWriteNotify { peripheral_handle, service_handle, characteristic_handle } => todo!(),
+                BackendEvent::GattCharacteristicWriteNotify { peripheral_handle, service_handle, characteristic_handle } => {
+                    let peripheral = Peripheral::new(session.clone(), peripheral_handle);
+                    let service = Service::wrap(peripheral.clone(), service_handle);
+                    let characteristic = Characteristic::wrap(peripheral.clone(), characteristic_handle);
+                    session.event_bus.send(Event::GattCharacteristicWriteComplete { peripheral , service, characteristic});
+                },
                 BackendEvent::GattDescriptorWriteNotify { peripheral_handle, service_handle, characteristic_handle, descriptor_handle } => todo!(),
                 BackendEvent::GattDescriptorNotify { peripheral_handle, service_handle, characteristic_handle, descriptor_handle, value } => todo!(),
             }
@@ -1557,6 +1558,7 @@ impl Session {
                 Event::ServiceGattCharacteristicValueNotify { ref peripheral, .. } => { if peripheral.peripheral_handle == filter_handle { Some(event) } else { None } },
                 Event::ServiceGattDescriptor { ref peripheral, .. } => { if peripheral.peripheral_handle == filter_handle { Some(event) } else { None } },
                 Event::ServiceGattDescriptorsComplete { ref peripheral, .. } => { if peripheral.peripheral_handle == filter_handle { Some(event) } else { None } },
+                Event::GattCharacteristicWriteComplete { ref peripheral, .. } => { if peripheral.peripheral_handle == filter_handle { Some(event) } else { None } },
                 Event::Flush(_) => Some(event)
             }
         }))

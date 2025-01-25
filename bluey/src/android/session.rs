@@ -34,7 +34,7 @@ use anyhow::anyhow;
 use jni::objects::{JObject, JClass, GlobalRef, JMethodID, JList, JValue, JString};
 use jni::JNIEnv;
 use uuid::Uuid;
-use crate::android::jni::*;
+use crate::android::{helper, jni::*};
 
 use crate::service::Service;
 use crate::session::{BackendSession, Filter, Session, SessionConfig};
@@ -997,12 +997,13 @@ impl AndroidSession {
                      -> Result<Self> {
 
         let thread_id = std::thread::current().id();
-        trace!("AndroidSession::new() (thread id = {thread_id:?}");
+        debug!("AndroidSession::new() (thread id = {thread_id:?}");
 
         let android_config = config.android.as_ref().expect("Missing AndroidConfig on Android");
-        let env = android_config.jni_env;
-        let jvm = env.get_java_vm()?;
+        let jvm = &android_config.vm;
+        let env = jvm.attach_current_thread_permanently()?;
 
+        let dex_loader = &android_config.dex_loader;
         // Since we likely aren't running on the Java main thread we need to consider
         // that env.find_class() will fallback to the system classLoader which won't find
         // our BleSession class.
@@ -1013,17 +1014,18 @@ impl AndroidSession {
         //
         let activity = android_config.activity;
         let activity_class = env.get_object_class(activity)?;
-
-        let get_class_loader_method = resolve_method_id(env, activity_class, "getClassLoader", "()Ljava/lang/ClassLoader;")?;
-
+        // let get_class_loader_method = resolve_method_id(env, activity_class, "getClassLoader", "()Ljava/lang/ClassLoader;")?;
+                    
         trace!("Calling activity.getClassLoader()");
-        let loader = try_call_object_method(env, activity, get_class_loader_method, &[])?;
-        let loader_class: JObject = env.find_class("java/lang/ClassLoader")?.into();
-        let load_class_method = resolve_method_id(env, loader_class.into(), "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;")?;
-        let ble_session_class_name: JObject = env.new_string(BLE_SESSION_CLASS_NAME)?.into();
-        let session_class: JClass = try_call_object_method(env, loader, load_class_method, &[
-            JValue::Object(ble_session_class_name).to_jni()
-        ])?.into();
+        // let loader = try_call_object_method(env, activity, get_class_loader_method, &[])?;
+        // let loader_class: JObject = env.find_class("java/lang/ClassLoader")?.into();
+        // let load_class_method = resolve_method_id(env, loader_class.into(), "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;")?;
+        // let ble_session_class_name: JObject = env.new_string(BLE_SESSION_CLASS_NAME)?.into();
+        let session_class = dex_loader.get_class(BLE_SESSION_CLASS_NAME)?;
+        let session_class:JClass = session_class.as_obj().into();
+        // let session_class: JClass = try_call_object_method(env, loader, load_class_method, &[
+        //     JValue::Object(ble_session_class_name).to_jni()
+        // ])?.into();
 
         trace!("AndroidSession::new(): find_class(BluetoothDevice)");
         let android_device_class = match env.find_class("android/bluetooth/BluetoothDevice") {
@@ -1032,11 +1034,12 @@ impl AndroidSession {
         };
 
         trace!("AndroidSession::new(): find_class(BleDevice)");
-        let ble_device_class_name: JObject = env.new_string(BLE_DEVICE_CLASS_NAME)?.into();
-        let ble_device_class: JClass = try_call_object_method(env, loader, load_class_method, &[
-            JValue::Object(ble_device_class_name).to_jni()
-        ])?.into();
-
+        // let ble_device_class_name: JObject = env.new_string(BLE_DEVICE_CLASS_NAME)?.into();
+        // let ble_device_class: JClass = try_call_object_method(env, loader, load_class_method, &[
+        //     JValue::Object(ble_device_class_name).to_jni()
+        // ])?.into();
+        let ble_device_class = dex_loader.get_class(BLE_DEVICE_CLASS_NAME)?;
+        let ble_device_class: JClass = ble_device_class.as_obj().into();
         trace!("AndroidSession::new(): construct new BleSession");
         let activity_val = jni::objects::JValue::Object(android_config.activity);
         let chooser_request_code = match android_config.companion_chooser_request_code {
@@ -1054,7 +1057,7 @@ impl AndroidSession {
 
         let mut session = AndroidSession {
             inner: Arc::new(AndroidSessionInner {
-                jvm,
+                jvm: env.get_java_vm()?,
                 activity_ref: env.new_global_ref(android_config.activity)?,
                 jsession: env.new_global_ref(jsession)?,
                 weak_handle: StdRwLock::new(JHandle::<AndroidSession>::default()),
@@ -1873,11 +1876,11 @@ impl AndroidSession {
                     AndroidSession::wrap_inner(android_session_inner.unwrap())
                 };
 
-                error!("IO: Checking get_env() before calling handle_io_request()");
+                debug!("IO: Checking get_env() before calling handle_io_request()");
                 if let Err(err) = session.jvm.get_env() {
                     error!("IO: can't query session JVM: {err:?}");
                 }
-                error!("IO: Calling handle_io_request(): {request:?}");
+                debug!("IO: Calling handle_io_request(): {request:?}");
                 if let Err(err) = AndroidSession::handle_io_request(&mut state, session, request, peripheral_handle, ble_device.clone()).await {
                     error!("IO Task: Failed to execute IO request: {err}");
                     // XXX: we should probably check for certain errors and in some cases
@@ -2160,7 +2163,7 @@ impl AndroidSession {
         // Only give the IO task a weak reference to the session to avoid a ref cycle...
 
         let thread_id = std::thread::current().id();
-        error!("About to spawn new IO task from thread id = {thread_id:?}");
+        debug!("About to spawn new IO task from thread id = {thread_id:?}");
         let weak_session_inner = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             AndroidSession::run_peripheral_io_task(peripheral_handle,
@@ -2545,7 +2548,7 @@ fn notify_io_callback_from_jni<F>(
 impl BackendSession for AndroidSession {
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         debug!("BLE: backend: start_scanning");
-        let jenv = self.jvm.get_env()?;
+        let jenv = *self.jvm.attach_current_thread()?;
         let ble_session = self.jsession.as_obj();
 
         try_call_void_method(jenv, ble_session, self.scanner_config_reset_method, &[])?;
