@@ -1,6 +1,48 @@
-[workspace]
-resolver="2"
+[package]
+name = "bluey"
+readme = "README.md"
+version = "0.1.0"
+keywords = ["bluetooth", "ble", "gatt"]
+categories = ["hardware-support"]
+license = "MIT"
+repository = "https://github.com/rib/bluey"
+edition = "2018"
 
-members = [
-    "bluey",
-]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "bluey"
+
+[dependencies]
+async-trait = "0.1"
+futures = "0.3"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"]}
+log = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+uuid = { version = "0.8", features = ["v4"] }
+dashmap = "4"
+serde = { version = "1.0", features = ["derive"] }
+arrayvec = "0.7"
+function_name = "0.2.0"
+lazy_static = "1"
+bitflags = "1"
+const_format = "0.2"
+
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.20.0"
+jni-min-helper = "0.2.2"
+android-activity = {version = "0.6.0", features = ["native-activity"]}
+
+[dev-dependencies]
+# upstream pretty_env_logger is no longer maintained...
+pretty_env_logger = { git = "https://github.com/project-anni/pretty-env-logger.git" }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "signal"] }
+android-activity = {version = "0.6.0", features = ["native-activity"]}
+
+[[example]]
+name = "android_example"
+path = "examples/android_example.rs"
+crate-type = ["cdylib"]
